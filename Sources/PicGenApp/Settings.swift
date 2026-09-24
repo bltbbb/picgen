@@ -27,6 +27,21 @@ final class Settings: ObservableObject {
     @Published var model: String { didSet { persist() } }
     @Published var proxy: String { didSet { persist() } }
 
+    /// 从上游 `GET /v1/models` 拉到的模型（只在内存里，不落盘）
+    @Published var upstreamModels: [String] = []
+
+    /// 选择器候选：上游列表优先，预设补齐（两者都不白名单，模型栏仍可手输）
+    var modelChoices: [String] {
+        var list: [String] = []
+        for name in upstreamModels where !list.contains(name) {
+            list.append(name)
+        }
+        for name in Settings.modelPresets where !list.contains(name) {
+            list.append(name)
+        }
+        return list
+    }
+
     private let defaults = UserDefaults.standard
 
     init() {

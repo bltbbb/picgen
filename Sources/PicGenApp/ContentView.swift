@@ -91,7 +91,7 @@ struct ContentView: View {
 
     private var modelMenu: some View {
         Menu {
-            ForEach(Settings.modelPresets, id: \.self) { name in
+            ForEach(settings.modelChoices, id: \.self) { name in
                 Button {
                     settings.model = name
                 } label: {
