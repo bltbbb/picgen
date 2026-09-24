@@ -54,10 +54,21 @@ struct APIClient {
     let apiKey: String
     let model: String
     let proxy: String
+    let mode: APIMode
 
     func generate(prompt: String) async throws -> GenResult {
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw GenError.emptyPrompt }
+        switch mode {
+        case .chat:
+            return try await generateViaChat(text)
+        case .images:
+            return try await generateViaImages(text)
+        }
+    }
+
+    /// 聊天接口：POST /v1/chat/completions，图片在回复文本里（markdown / data URL）
+    private func generateViaChat(_ text: String) async throws -> GenResult {
         guard let url = Self.join(base, "chat/completions") else { throw GenError.badBase(base) }
 
         let start = Date()
@@ -124,6 +135,96 @@ struct APIClient {
             ms: Int(Date().timeIntervalSince(start) * 1000),
             content: content
         )
+    }
+
+    /// 图片接口：POST /v1/images/generations，返回 data[0].b64_json 或 data[0].url
+    private func generateViaImages(_ text: String) async throws -> GenResult {
+        guard let url = Self.join(base, "images/generations") else { throw GenError.badBase(base) }
+
+        let start = Date()
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.timeoutInterval = 180
+        let payload: [String: Any] = ["model": model, "prompt": text, "n": 1]
+        req.httpBody = try JSONSerialization.data(withJSONObject: payload)
+
+        let session = Self.makeSession(proxy: proxy)
+        let fetched: (Data, URLResponse)
+        do {
+            fetched = try await session.data(for: req)
+        } catch {
+            throw GenError.network(error.localizedDescription)
+        }
+        let data = fetched.0
+        let code = (fetched.1 as? HTTPURLResponse)?.statusCode ?? 0
+        guard code == 200 else {
+            throw GenError.http(code, Self.errorMessage(data: data))
+        }
+
+        let bodyText = String(data: data, encoding: .utf8) ?? ""
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw GenError.badResponse(Self.preview(bodyText))
+        }
+        guard let item = Self.firstImageItem(in: json) else {
+            throw GenError.badResponse("没有 data[0]：" + Self.preview(bodyText))
+        }
+
+        let imageData: Data
+        var remoteURL: URL?
+        if let b64 = item["b64_json"] as? String, let bytes = Self.decodeBase64(b64) {
+            imageData = bytes
+        } else if let raw = item["url"] as? String, let source = Self.source(fromRaw: raw) {
+            switch source {
+            case .data(let bytes):
+                imageData = bytes
+            case .remote(let url):
+                remoteURL = url
+                let download: (Data, URLResponse)
+                do {
+                    download = try await session.data(from: url)
+                } catch {
+                    throw GenError.network(error.localizedDescription)
+                }
+                let downloadCode = (download.1 as? HTTPURLResponse)?.statusCode ?? 0
+                guard downloadCode == 200 else {
+                    throw GenError.imageDownload(downloadCode)
+                }
+                imageData = download.0
+            }
+        } else {
+            throw GenError.badResponse("data[0] 里没有可用字段（\(item.keys.sorted().joined(separator: ", "))）")
+        }
+
+        guard let image = UIImage(data: imageData) else {
+            throw GenError.badImageData
+        }
+        return GenResult(
+            image: image,
+            imageURL: remoteURL,
+            ms: Int(Date().timeIntervalSince(start) * 1000),
+            content: bodyText
+        )
+    }
+
+    /// data[0] 的各种写法
+    private static func firstImageItem(in json: [String: Any]) -> [String: Any]? {
+        if let list = json["data"] as? [[String: Any]], let first = list.first { return first }
+        if let list = json["images"] as? [[String: Any]], let first = list.first { return first }
+        if let b64 = json["b64_json"] as? String { return ["b64_json": b64] }
+        if let raw = json["url"] as? String { return ["url": raw] }
+        return nil
+    }
+
+    /// b64_json 可能带 `data:image/png;base64,` 前缀
+    private static func decodeBase64(_ raw: String) -> Data? {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.lowercased().hasPrefix("data:image/"), let comma = s.firstIndex(of: ",") {
+            s = String(s[s.index(after: comma)...])
+        }
+        return Data(base64Encoded: s, options: [.ignoreUnknownCharacters])
     }
 
     /// `GET /v1/models`，用于设置页的连通性测试

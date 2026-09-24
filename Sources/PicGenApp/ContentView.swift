@@ -54,7 +54,12 @@ struct ContentView: View {
             .navigationTitle("生图")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) { modelMenu }
+                ToolbarItem(placement: .navigationBarLeading) {
+                    HStack(spacing: 12) {
+                        modeMenu
+                        modelMenu
+                    }
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
                         showSettings = true
@@ -88,6 +93,27 @@ struct ContentView: View {
     }
 
     // MARK: - 顶部模型切换
+
+    private var modeMenu: some View {
+        Menu {
+            ForEach(APIMode.allCases, id: \.self) { mode in
+                Button {
+                    settings.apiMode = mode
+                } label: {
+                    if mode == settings.apiMode {
+                        Label(mode.title, systemImage: "checkmark")
+                    } else {
+                        Text(mode.title)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.left.arrow.right")
+                Text(settings.apiMode.shortTitle).font(.caption)
+            }
+        }
+    }
 
     private var modelMenu: some View {
         Menu {
@@ -331,7 +357,8 @@ struct ContentView: View {
             base: settings.base,
             apiKey: settings.apiKey,
             model: settings.model,
-            proxy: settings.proxy
+            proxy: settings.proxy,
+            mode: settings.apiMode
         )
         let model = settings.model
 

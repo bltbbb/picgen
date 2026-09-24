@@ -45,12 +45,25 @@ Key     你自己的 API Key
 
 ## 接口要点
 
-- 接口按 AxonHub 中继的实测行为：标准 `POST /v1/images/generations` 不可用（400 `messages are required`），生图必须走 `POST {端点}/v1/chat/completions`：
-  ```json
-  {"model":"grok-imagine-image-2.0","messages":[{"role":"user","content":"生成一张图片：…"}],"n":1}
-  ```
-- 响应 `choices[0].message.content` 里带图片：既可能是 `![image](https://…)` 外链，也可能是 `![image_1](data:image/png;base64,…)` 内联图 —— App 两种都会自己抠出来（内联图不用再下载）。
-- 单次约 14~17s；提示词违规会被上游 400 挡掉。
+App 支持两种上游形态，设置页和首页左上角都能一键切（☁️ 那个图标）：
+
+**聊天接口（chat）** —— AxonHub 这类中继：标准 `/v1/images/generations` 是坏的（400 `messages are required`），生图必须走 `POST {端点}/v1/chat/completions`：
+
+```json
+{"model":"grok-imagine-image-2.0","messages":[{"role":"user","content":"生成一张图片：…"}],"n":1}
+```
+
+响应 `choices[0].message.content` 里带图片：可能是 `![image](https://…)` 外链，也可能是 `![image_1](data:image/png;base64,…)` 内联图 —— App 两种都会自己抠出来（内联图不用再下载）。
+
+**图片接口（images）** —— OpenAI 标准生图端点 `POST {端点}/v1/images/generations`：
+
+```json
+{"model":"gpt-image-2.5","prompt":"…","n":1}
+```
+
+读 `data[0].b64_json` 或 `data[0].url`（url 里塞 data URL 也认）。上游报 `permission_denied: 站点用户 API 仅开放图片接口，请使用 /v1/images/generations` 时就切到这个。
+
+两种模式单次出图 15~60s 不等；提示词违规会被上游 400 挡掉。
 
 ## 目录
 

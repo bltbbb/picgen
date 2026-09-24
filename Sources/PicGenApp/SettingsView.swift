@@ -14,6 +14,17 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section {
+                    Picker("生成方式", selection: $settings.apiMode) {
+                        ForEach(APIMode.allCases, id: \.self) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    Text(settings.apiMode.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
                     TextField(Settings.exampleBase, text: $settings.base)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -78,7 +89,7 @@ struct SettingsView: View {
                 } header: {
                     Text("接口")
                 } footer: {
-                    Text("端点可以是 `https://你的中转`，也可以带 /v1；生图请求发到 `{端点}/v1/chat/completions`。填好点下面的「测试连接」验证。")
+                    Text("端点可以是 `https://你的中转`，也可以带 /v1；请求路径由上面的生成方式决定（`/v1/chat/completions` 或 `/v1/images/generations`）。填好点下面的「测试连接」验证。")
                 }
 
                 Section {
@@ -145,7 +156,8 @@ struct SettingsView: View {
             base: settings.base,
             apiKey: settings.apiKey,
             model: settings.model,
-            proxy: settings.proxy
+            proxy: settings.proxy,
+            mode: settings.apiMode
         )
         do {
             let models = try await client.models()
@@ -172,7 +184,8 @@ struct SettingsView: View {
             base: settings.base,
             apiKey: settings.apiKey,
             model: settings.model,
-            proxy: settings.proxy
+            proxy: settings.proxy,
+            mode: settings.apiMode
         )
         Task {
             do {
