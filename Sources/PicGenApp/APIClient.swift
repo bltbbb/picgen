@@ -8,6 +8,12 @@ struct GenResult {
     let content: String
 }
 
+/// 上游给的图片可能是远程链接，也可能是内联的 data:image/...;base64
+enum ImageSource {
+    case remote(URL)
+    case data(Data)
+}
+
 enum GenError: LocalizedError {
     case emptyPrompt
     case badBase(String)
@@ -15,6 +21,7 @@ enum GenError: LocalizedError {
     case noImage(String)
     case badResponse(String)
     case imageDownload(Int)
+    case badImageData
     case network(String)
 
     var errorDescription: String? {
@@ -31,6 +38,8 @@ enum GenError: LocalizedError {
             return "响应解析失败：\(msg)"
         case .imageDownload(let code):
             return "图片下载失败（HTTP \(code)）"
+        case .badImageData:
+            return "图片数据解析失败（上游给的格式不支持）"
         case .network(let msg):
             return "网络错误：\(msg)"
         }
@@ -81,26 +90,37 @@ struct APIClient {
         }
 
         let content = Self.content(from: data) ?? (String(data: data, encoding: .utf8) ?? "")
-        guard let imageURL = Self.imageURL(in: content) else {
+        guard let source = Self.imageSource(in: content) else {
             throw GenError.noImage(Self.preview(content))
         }
 
-        let imageResult: (Data, URLResponse)
-        do {
-            imageResult = try await session.data(from: imageURL)
-        } catch {
-            throw GenError.network(error.localizedDescription)
+        let imageData: Data
+        var remoteURL: URL?
+        switch source {
+        case .data(let bytes):
+            imageData = bytes
+        case .remote(let url):
+            remoteURL = url
+            let imageResult: (Data, URLResponse)
+            do {
+                imageResult = try await session.data(from: url)
+            } catch {
+                throw GenError.network(error.localizedDescription)
+            }
+            let imageCode = (imageResult.1 as? HTTPURLResponse)?.statusCode ?? 0
+            guard imageCode == 200 else {
+                throw GenError.imageDownload(imageCode)
+            }
+            imageData = imageResult.0
         }
-        let imageData = imageResult.0
-        let imageResponse = imageResult.1
-        let imageCode = (imageResponse as? HTTPURLResponse)?.statusCode ?? 0
-        guard imageCode == 200, let image = UIImage(data: imageData) else {
-            throw GenError.imageDownload(imageCode)
+
+        guard let image = UIImage(data: imageData) else {
+            throw GenError.badImageData
         }
 
         return GenResult(
             image: image,
-            imageURL: imageURL,
+            imageURL: remoteURL,
             ms: Int(Date().timeIntervalSince(start) * 1000),
             content: content
         )
@@ -195,25 +215,45 @@ struct APIClient {
         return nil
     }
 
-    /// 优先 markdown 图片链接，其次任意裸 URL
-    static func imageURL(in text: String) -> URL? {
+    /// 从响应文本里找图片：优先 markdown 图片，其次裸 data:image / 裸 http 链接。
+    /// 上游既可能给 `![image](https://…)`，也可能给 `![image_1](data:image/png;base64,…)`。
+    static func imageSource(in text: String) -> ImageSource? {
         let patterns = [
-            "!\\[[^\\]]*\\]\\(\\s*(https?://[^)\\s]+)\\s*\\)",
-            "(https?://[^\\s\"'<>)\\]]+)",
+            "!\\[[^\\]]*\\]\\(\\s*([\\s\\S]*?)\\s*\\)",            // markdown 图片
+            "(data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\\s]+)",  // 裸 data URL
+            "(https?://[^\\s\"'<>)\\]]+)",                             // 裸 http 链接
         ]
         for pattern in patterns {
-            guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
-            let range = NSRange(text.startIndex..<text.endIndex, in: text)
-            guard let match = re.firstMatch(in: text, options: [], range: range), match.numberOfRanges > 1 else { continue }
-            guard let r = Range(match.range(at: 1), in: text) else { continue }
-            var raw = String(text[r])
-            // 去掉可能粘上的中文标点
-            while let last = raw.last, "。，、；：".contains(last) {
-                raw.removeLast()
-            }
-            if let url = URL(string: raw) { return url }
+            guard let raw = firstMatch(in: text, pattern: pattern) else { continue }
+            if let source = source(fromRaw: raw) { return source }
         }
         return nil
+    }
+
+    private static func firstMatch(in text: String, pattern: String) -> String? {
+        guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = re.firstMatch(in: text, options: [], range: range), match.numberOfRanges > 1,
+              let r = Range(match.range(at: 1), in: text) else { return nil }
+        return String(text[r])
+    }
+
+    private static func source(fromRaw raw: String) -> ImageSource? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.lowercased().hasPrefix("data:image/") {
+            guard let comma = trimmed.firstIndex(of: ",") else { return nil }
+            let meta = trimmed[trimmed.startIndex..<comma].lowercased()
+            let payload = String(trimmed[trimmed.index(after: comma)...])
+            guard meta.contains(";base64") else { return nil }
+            guard let bytes = Data(base64Encoded: payload, options: [.ignoreUnknownCharacters]) else { return nil }
+            return .data(bytes)
+        }
+        var cleaned = trimmed
+        while let last = cleaned.last, "。，、；：".contains(last) {
+            cleaned.removeLast()
+        }
+        guard let url = URL(string: cleaned), let scheme = url.scheme, scheme.hasPrefix("http") else { return nil }
+        return .remote(url)
     }
 
     static func errorMessage(data: Data) -> String {
@@ -233,7 +273,11 @@ struct APIClient {
     }
 
     static func preview(_ text: String) -> String {
-        let s = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var s = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 内联图片的 base64 会淹没错误信息，这里截掉
+        if let range = s.range(of: "base64,") {
+            s = String(s[s.startIndex..<range.lowerBound]) + "base64,<…>"
+        }
         if s.count <= 200 { return s }
         return String(s.prefix(200)) + "…"
     }

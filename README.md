@@ -49,7 +49,7 @@ Key     你自己的 API Key
   ```json
   {"model":"grok-imagine-image-2.0","messages":[{"role":"user","content":"生成一张图片：…"}],"n":1}
   ```
-- 响应 `choices[0].message.content` 是一行 markdown：`![image](https://aoij.cc.cd/…)`，App 会把链接抠出来下载。
+- 响应 `choices[0].message.content` 里带图片：既可能是 `![image](https://…)` 外链，也可能是 `![image_1](data:image/png;base64,…)` 内联图 —— App 两种都会自己抠出来（内联图不用再下载）。
 - 单次约 14~17s；提示词违规会被上游 400 挡掉。
 
 ## 目录
