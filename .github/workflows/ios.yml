@@ -32,8 +32,15 @@ jobs:
         shell: bash
         run: |
           set -eo pipefail
+          # SwiftPM 包在 xcodebuild 里注册的 scheme 名不一定等于可执行文件名，这里自动取第一个
+          scheme="$(xcodebuild -list -json 2>/dev/null | python3 -c 'import json,sys;print(list(json.load(sys.stdin).values())[0]["schemes"][0])' 2>/dev/null)"
+          if [ -z "$scheme" ]; then
+            echo "::warning::没能自动识别 scheme，回退用 PicGen"
+            scheme="PicGen"
+          fi
+          echo "使用 scheme：$scheme"
           xcodebuild build \
-            -scheme PicGenApp \
+            -scheme "$scheme" \
             -configuration Release \
             -destination "generic/platform=iOS" \
             -derivedDataPath build \
@@ -45,8 +52,22 @@ jobs:
         shell: bash
         run: |
           set -eo pipefail
-          binary="build/Build/Products/Release-iphoneos/PicGenApp"
-          test -f "$binary"
+          products="build/Build/Products/Release-iphoneos"
+          ls -la "$products" || true
+
+          # 产物名可能跟包名/产物名不一致，两个候选都试一下
+          binary=""
+          for candidate in "$products/PicGenApp" "$products/PicGen"; do
+            if [ -f "$candidate" ]; then
+              binary="$candidate"
+              break
+            fi
+          done
+          if [ -z "$binary" ]; then
+            echo "::error::没找到可执行文件（看上面的 products 目录）"
+            exit 1
+          fi
+          echo "可执行文件：$binary"
 
           staging="$PWD/artifacts/unsigned"
           rm -rf "$staging"
